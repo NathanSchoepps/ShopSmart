@@ -23,8 +23,8 @@ async def get_checkout(user_data: dict = Depends(get_current_user)):
 
     # Créez une session de paiement avec Stripe
     checkout_session = stripe.checkout.Session.create(
-        success_url=YOUR_DOMAIN + "/success.html",
-        cancel_url=YOUR_DOMAIN + "/cancel.html",
+        success_url=YOUR_DOMAIN + "/html/success.html",
+        cancel_url=YOUR_DOMAIN + "/html/cancel.html",
         line_items=[
             {
                 "price": "price_1O5214GwPzvmtN7SOroWjJe7",

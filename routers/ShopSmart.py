@@ -27,10 +27,8 @@ async def get_all_shopping_lists(userData: int = Depends(get_current_user)):
         .get()
         .val()
     )
-
     if status != "active":
         raise HTTPException(status_code=401, detail="no active subscription")
-
     fireBaseobject = (
         db.child("users")
         .child(userData["uid"])

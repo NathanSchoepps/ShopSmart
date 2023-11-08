@@ -21,9 +21,6 @@ async def create_an_account(user_body: User):
         )
 
 
-# Login endpoint
-
-
 @router.post("/login")
 async def create_swagger_token(user_credentials: OAuth2PasswordRequestForm = Depends()):
     try:

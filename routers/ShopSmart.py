@@ -5,9 +5,6 @@ from classes.schema_dto import Item, ShoppingList
 from database.firebase import db
 from routers.Auth import get_current_user
 
-# from routers.Stripe import increment_stripe
-
-
 router = APIRouter(tags=["Lists"])
 
 
@@ -19,6 +16,21 @@ shopping_lists = [
 
 @router.get("/lists/", response_model=List[ShoppingList])
 async def get_all_shopping_lists(userData: int = Depends(get_current_user)):
+    stripe_sub = db.child("users").child(userData["uid"]).child("stripe").get().val()
+    if not stripe_sub:
+        raise HTTPException(status_code=401, detail="no subscription")
+    status = (
+        db.child("users")
+        .child(userData["uid"])
+        .child("stripe")
+        .child("status")
+        .get()
+        .val()
+    )
+
+    if status != "active":
+        raise HTTPException(status_code=401, detail="no active subscription")
+
     fireBaseobject = (
         db.child("users")
         .child(userData["uid"])

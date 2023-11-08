@@ -1,77 +1,86 @@
-from fastapi import APIRouter, Header, Depends, Body, Request
+from fastapi import APIRouter, Header, Depends, Request, HTTPException
 from fastapi.responses import RedirectResponse
 import stripe
 from firebase_admin import auth
 from database.firebase import db
 from routers.Auth import get_current_user
-from dotenv import dotenv_values
 
-router = APIRouter(tags=["Stripe"], prefix="/stripe")
+# from dotenv import dotenv_values
 
-# Votre test secret API Key
-config = dotenv_values(".env")
-stripe.api_key = "sk_test_51O4jrjGwPzvmtN7SduawL5IUCTQw7CS7i7O4xs4cNvS3vtPCBcgjMdns23lASZGzfAbKruD4z64DJlvRsGWAfWX500iqiNvjqu"  # config["STRIPE_SK"]
+router = APIRouter(prefix="/stripe", tags=["Stripe"])
+
+stripe.api_key = "sk_test_51O4jrjGwPzvmtN7SduawL5IUCTQw7CS7i7O4xs4cNvS3vtPCBcgjMdns23lASZGzfAbKruD4z64DJlvRsGWAfWX500iqiNvjqu"
 
 YOUR_DOMAIN = "http://localhost"
 
 
-@router.get("/checkout")
-async def stripe_checkout():
-    try:
-        checkout_session = stripe.checkout.Session.create(
-            line_items=[
-                {
-                    # PRICE ID du produit que vous vouler vendre
-                    "price": "price_1O5214GwPzvmtN7SOroWjJe7",
-                    "quantity": 1,
-                },
-            ],
-            mode="subscription",
-            payment_method_types=["card"],
-            success_url=YOUR_DOMAIN + "/success.html",
-            cancel_url=YOUR_DOMAIN + "/cancel.html",
-        )
-        # return checkout_session
-        response = RedirectResponse(url=checkout_session["url"])
-        return response
-    except Exception as e:
-        return str(e)
+@router.get("/subscribe")
+async def get_checkout(user_data: dict = Depends(get_current_user)):
+    # Vérifiez d'abord si l'utilisateur est déjà abonné dans la base de données
+    query_result = db.child("users").child(user_data["uid"]).child("stripe").get().val()
+    if query_result:
+        raise HTTPException(status_code=400, detail="user already subscribed")
+
+    # Créez une session de paiement avec Stripe
+    checkout_session = stripe.checkout.Session.create(
+        success_url=YOUR_DOMAIN + "/success.html",
+        cancel_url=YOUR_DOMAIN + "/cancel.html",
+        line_items=[
+            {
+                "price": "price_1O5214GwPzvmtN7SOroWjJe7",
+                "quantity": 1,
+            }
+        ],
+        mode="subscription",
+        payment_method_types=["card"],
+        customer_email=user_data["email"],
+    )
+
+    # Après avoir créé la session de paiement, enregistrez les informations de souscription dans la base de données
+    subscription_data = {
+        "subscription_id": checkout_session["subscription"],
+        "status": "active",  # Vous pouvez initialiser l'état de la souscription selon vos besoins
+    }
+    db.child("users").child(user_data["uid"]).child("stripe").set(subscription_data)
+
+    return checkout_session["url"]
 
 
 @router.post("/webhook")
-async def webhook_received(request: Request, stripe_signature: str = Header(None)):
-    webhook_secret = (
-        "whsec_56ca131466c9589d65e8341d35fae97b6b7eb4e58ef10911c7bf074d675b19a1"
-    )
-    data = await request.body()
+async def retreive_webhook(request: Request, STRIPE_SIGNATURE: str = Header()):
+    event = None
+    payload = await request.body()
+    sig_header = STRIPE_SIGNATURE
+
+    # constructing webhook event
     try:
         event = stripe.Webhook.construct_event(
-            payload=data, sig_header=stripe_signature, secret=webhook_secret
+            payload,
+            sig_header,
+            "whsec_56ca131466c9589d65e8341d35fae97b6b7eb4e58ef10911c7bf074d675b19a1",
         )
-        event_data = event["data"]
-    except Exception as e:
-        return {"error": str(e)}
-
-    event_type = event["type"]
-    if event_type == "checkout.session.completed":
-        print("checkout session completed")
-    elif event_type == "invoice.paid":
-        print("invoice paid")
-        cust_email = event_data["object"]["customer_email"]  # Email de notre customer
-        fireBase_user = auth.get_user_by_email(
-            cust_email
-        )  # identifiant firebase correspondant (uid)
-        cust_id = event_data["object"]["customer"]  # Stripe ref du customer
-        item_id = event_data["object"]["lines"]["data"][0]["subscription_item"]
-        db.child("users").child(fireBase_user.uid).child("stripe").set(
-            {"item_id": item_id, "cust_id": cust_id}
-        )  # écriture dans la DB Firebase
-    elif event_type == "invoice.payment_failed":
-        print("invoice payment failed")
+    except ValueError as e:
+        print("Invalid payload in POST /stripe/webhook response-body")
+        raise e
+    except stripe.error.SignatureVerificationError as e:
+        print("Invalid signature in POST /stripe/webhook response-header")
+        raise e
+    # event handler
+    if event["type"] == "checkout.session.completed":
+        print("Checkout session completed")
+    elif event["type"] == "invoice.paid":
+        print("Invoice paid")
+        email = event["data"]["object"]["customer_email"]
+        firebase_user = auth.get_user_by_email(email)
+        customer_id = event["data"]["object"]["customer"]
+        subscription_id = event["data"]["object"]["subscription"]
+        db.child("users").child(firebase_user.uid).child("stripe").set(
+            data={"subscription_id": subscription_id, "customer_id": customer_id}
+        )
+    elif event["type"] == "invoice.payment_failed":
+        print("Invoice payment failed")
     else:
-        print(f"unhandled event: {event_type}")
-
-    return {"status": "success"}
+        print("Unhandled event type {}".format(event["type"]))
 
 
 @router.get("/usage")
@@ -80,12 +89,3 @@ async def stripe_usage(userData: int = Depends(get_current_user)):
     stripe_data = db.child("users").child(fireBase_user.uid).child("stripe").get().val()
     cust_id = stripe_data["cust_id"]
     return stripe.Invoice.upcoming(customer=cust_id)
-
-
-def increment_stripe(userId: str):
-    firebase_user = auth.get_user(userId)  # Identifiant firebase correspondant (uid)
-    stripe_data = db.child("users").child(firebase_user.uid).child("stripe").get().val()
-    print(stripe_data.values())
-    item_id = stripe_data["item_id"]
-    stripe.SubscriptionItem.create_usage_record(item_id, quantity=1)
-    return
